@@ -1,0 +1,7 @@
+# BTC Market Volume Tracker - Dependencies
+flask==3.0.0
+requests==2.31.0
+requests[socks]
+apscheduler==3.10.4
+gunicorn==21.2.0
+PySocks==1.7.1

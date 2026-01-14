@@ -69,6 +69,28 @@ SYNC_HOUR = 1
 SYNC_DAYS = 7
 ```
 
+### Environment Variables
+
+You can also configure the app using environment variables (takes priority over `config.ini`):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PROXY_URL` | HTTP/SOCKS5 proxy for Binance API | `http://user:pass@host:port` or `socks5://host:port` |
+| `DATABASE_PATH` | SQLite database path | `volume_data.db` |
+| `PORT` | Server port | `5000` |
+
+**Example (Windows PowerShell):**
+```powershell
+$env:PROXY_URL = "socks5://127.0.0.1:1080"
+python app.py
+```
+
+**Example (Linux/Mac):**
+```bash
+export PROXY_URL="socks5://127.0.0.1:1080"
+python app.py
+```
+
 ## Deploy to Render.com
 
 ### Blueprint (Recommended)

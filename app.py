@@ -343,28 +343,61 @@ def export_data():
 # =============================================================================
 
 def scheduled_sync():
-    """Run scheduled daily sync for all configured coins"""
-    print(f"[{datetime.now()}] Running scheduled sync...")
+    """Run scheduled daily full sync for all configured coins
+    
+    Attempts full sync first. If any error occurs (Binance or ETF),
+    automatically falls back to incremental sync for that coin.
+    """
+    print(f"[{datetime.now()}] Running scheduled FULL sync...")
     
     coins = config.get_coins()
     
     for coin in coins:
+        full_sync_success = False
+        
+        # Try full sync first
         try:
-            # Incremental sync - only fetch new days
-            latest_date = db.get_latest_date(coin)
-            if latest_date:
-                # We have data, just update recent days
-                volume_data = bf.fetch_coin_data(coin=coin, days=config.get_sync_days())
-            else:
-                # No data, do initial full sync
-                volume_data = bf.fetch_coin_data(coin=coin, days=None)
+            print(f"  [{coin}] Attempting full sync...")
+            volume_data = bf.fetch_coin_data(coin=coin, days=None)
             
             if volume_data:
                 db.upsert_volume_data(volume_data)
                 db.update_sync_status(coin)
-                print(f"  Synced {len(volume_data)} records for {coin}")
+                print(f"  [{coin}] Full sync complete: {len(volume_data)} records")
+                full_sync_success = True
+            
+            # Also sync ETF data if coin has ETF mapping
+            etf_tickers = config.get_etfs_for_coin(coin)
+            if etf_tickers:
+                try:
+                    etf_data = ef.fetch_etf_for_coin(coin)
+                    if etf_data:
+                        db.upsert_etf_data(etf_data)
+                        print(f"  [{coin}] ETF sync complete: {len(etf_data)} records")
+                except Exception as etf_err:
+                    print(f"  [{coin}] ETF sync failed: {etf_err}")
+                    # ETF failure doesn't trigger fallback, just log it
+                    
         except Exception as e:
-            print(f"  Error syncing {coin}: {e}")
+            print(f"  [{coin}] Full sync failed: {e}")
+            print(f"  [{coin}] Falling back to incremental sync...")
+            
+            # Fallback to incremental sync
+            try:
+                latest_date = db.get_latest_date(coin)
+                if latest_date:
+                    volume_data = bf.fetch_coin_data(coin=coin, days=config.get_sync_days())
+                else:
+                    # Still no data and full sync failed - skip
+                    print(f"  [{coin}] No existing data and full sync failed, skipping")
+                    continue
+                
+                if volume_data:
+                    db.upsert_volume_data(volume_data)
+                    db.update_sync_status(coin)
+                    print(f"  [{coin}] Incremental sync complete: {len(volume_data)} records")
+            except Exception as fallback_err:
+                print(f"  [{coin}] Incremental sync also failed: {fallback_err}")
     
     print(f"[{datetime.now()}] Scheduled sync complete")
 

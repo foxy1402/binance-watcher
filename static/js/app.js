@@ -1,17 +1,18 @@
 /**
  * Crypto Volume Tracker - Frontend JavaScript
- * Price chart with Accumulation/Distribution zones
+ * Price chart with Accumulation/Distribution zones + Trading Indicators
  */
 
 const API_BASE = '';
 const ROWS_PER_PAGE = 25;
+const CUSTOM_COINS_KEY = 'binance_custom_coins';
 
 // State
 let currentCoin = 'BTC';
 let configuredCoins = ['BTC'];
+let customCoins = JSON.parse(localStorage.getItem(CUSTOM_COINS_KEY) || '[]');
 let etfMappings = {};  // coin -> ETF ticker
 let volumeData = [];
-let cumulativeData = [];
 let etfData = [];
 let currentPage = 1;
 let sortColumn = 'date';
@@ -19,8 +20,6 @@ let sortDirection = 'desc';
 
 // Charts
 let priceZoneChart = null;
-let netVolumeChart = null;
-let cumulativeChart = null;
 let etfZoneChart = null;
 
 // =============================================================================
@@ -103,15 +102,6 @@ async function fetchVolumes(coin, startDate, endDate) {
     throw new Error(data.message || 'Failed');
 }
 
-async function fetchCumulative(coin, startDate) {
-    let url = `${API_BASE}/api/volumes/cumulative?coin=${coin}`;
-    if (startDate) url += `&start_date=${startDate}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.success) return data.data;
-    throw new Error(data.message || 'Failed');
-}
-
 async function fetchSummary(coin) {
     const res = await fetch(`${API_BASE}/api/volumes/summary?coin=${coin}`);
     const data = await res.json();
@@ -152,6 +142,71 @@ async function triggerEtfSync(coin) {
         body: JSON.stringify({ coin })
     });
     return await res.json();
+}
+
+// Custom Coin Management
+async function validateCoinOnBinance(coin) {
+    try {
+        // Try to fetch volume data for 1 day to validate
+        const url = `https://api.binance.com/api/v3/klines?symbol=${coin}USDT&interval=1d&limit=1`;
+        const res = await fetch(url);
+        if (res.ok) {
+            const data = await res.json();
+            return data && data.length > 0;
+        }
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
+
+function getAllCoins() {
+    return [...new Set([...configuredCoins, ...customCoins])];
+}
+
+function addCustomCoin(coin) {
+    coin = coin.toUpperCase();
+    if (!customCoins.includes(coin) && !configuredCoins.includes(coin)) {
+        customCoins.push(coin);
+        localStorage.setItem(CUSTOM_COINS_KEY, JSON.stringify(customCoins));
+        updateCoinSelect();
+        return true;
+    }
+    return false;
+}
+
+function removeCustomCoin(coin) {
+    const index = customCoins.indexOf(coin.toUpperCase());
+    if (index > -1) {
+        customCoins.splice(index, 1);
+        localStorage.setItem(CUSTOM_COINS_KEY, JSON.stringify(customCoins));
+        updateCoinSelect();
+        return true;
+    }
+    return false;
+}
+
+function updateCoinSelect() {
+    const select = document.getElementById('coinSelect');
+    const allCoins = getAllCoins();
+    select.innerHTML = allCoins.map(c => {
+        const isCustom = customCoins.includes(c);
+        const label = isCustom ? `${c} (Custom)` : c;
+        return `<option value="${c}">${label}</option>`;
+    }).join('');
+    select.value = currentCoin;
+    
+    // Show/hide remove button based on whether current coin is custom
+    updateRemoveButtonVisibility();
+}
+
+function updateRemoveButtonVisibility() {
+    const removeBtn = document.getElementById('removeCoinBtn');
+    const isCustomCoin = customCoins.includes(currentCoin);
+    
+    if (removeBtn) {
+        removeBtn.style.display = isCustomCoin ? 'inline-flex' : 'none';
+    }
 }
 
 // =============================================================================
@@ -227,6 +282,19 @@ function initCharts() {
                     fill: 'origin',
                     yAxisID: 'yPrice',
                     order: 2
+                },
+                {
+                    label: 'Whale Activity',
+                    data: [],
+                    backgroundColor: '#FFD700',
+                    borderColor: '#FFA500',
+                    borderWidth: 2,
+                    pointRadius: 8,
+                    pointStyle: 'star',
+                    pointHoverRadius: 12,
+                    showLine: false,
+                    yAxisID: 'yPrice',
+                    order: 0
                 }
             ]
         },
@@ -254,46 +322,15 @@ function initCharts() {
                             if (ctx.dataset.label === 'Coin Price') {
                                 return `Price: $${formatNumber(ctx.parsed.y, 2)}`;
                             }
+                            if (ctx.dataset.label === 'Whale Activity') {
+                                return `🐋 Whale Activity Detected - Price: $${formatNumber(ctx.parsed.y, 2)}`;
+                            }
                             return null;
                         }
                     }
                 }
             }
         }
-    });
-
-    // Net Volume Chart
-    const netCtx = document.getElementById('netVolumeChart').getContext('2d');
-    netVolumeChart = new Chart(netCtx, {
-        type: 'bar',
-        data: { datasets: [{ data: [], backgroundColor: [] }] },
-        options: {
-            ...baseOpts,
-            plugins: {
-                ...baseOpts.plugins,
-                tooltip: {
-                    ...baseOpts.plugins.tooltip,
-                    callbacks: { label: (ctx) => `Net: ${formatCoin(ctx.raw, currentCoin)}` }
-                }
-            }
-        }
-    });
-
-    // Cumulative Chart
-    const cumCtx = document.getElementById('cumulativeChart').getContext('2d');
-    cumulativeChart = new Chart(cumCtx, {
-        type: 'line',
-        data: {
-            datasets: [{
-                data: [],
-                borderColor: '#58a6ff',
-                backgroundColor: 'rgba(88, 166, 255, 0.1)',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0
-            }]
-        },
-        options: baseOpts
     });
 
     // ETF Zone Chart (same structure as price zone chart)
@@ -380,50 +417,141 @@ function updateCharts() {
     const priceData = [];
     const accumulationData = [];
     const distributionData = [];
+    
+    // Calculate support/resistance levels
+    const supportResistance = calculateSupportResistance(sorted);
+    
+    // Calculate whale zones (significant volume spikes)
+    const whaleZones = calculateWhaleZones(sorted);
 
     for (const d of sorted) {
         const date = new Date(d.date);
         const price = d.close_price;
         const isAccumulation = d.net_volume > 0;
+        
+        // Check if this is a whale zone
+        const isWhaleZone = whaleZones.some(wz => wz.date === d.date);
+        const volumeStrength = Math.abs(d.net_volume);
 
         priceData.push({ x: date, y: price });
 
-        // For accumulation zones: show price where buying happened
+        // Enhanced accumulation/distribution with whale highlighting
         if (isAccumulation) {
-            accumulationData.push({ x: date, y: price });
+            const intensity = isWhaleZone ? price * 1.02 : price; // Slightly higher for whale zones
+            accumulationData.push({ x: date, y: intensity });
             distributionData.push({ x: date, y: null });
         } else {
-            // For distribution zones: show price where selling happened
             accumulationData.push({ x: date, y: null });
-            distributionData.push({ x: date, y: price });
+            const intensity = isWhaleZone ? price * 1.02 : price;
+            distributionData.push({ x: date, y: intensity });
         }
     }
+    
+    // Build whale marker data points
+    const whaleMarkerData = whaleZones.map(wz => ({
+        x: new Date(wz.date),
+        y: wz.price
+    }));
 
     // Update Price Zone Chart
     priceZoneChart.data.datasets[0].data = priceData;
     priceZoneChart.data.datasets[1].data = accumulationData;
     priceZoneChart.data.datasets[2].data = distributionData;
-    priceZoneChart.update('none');
-
-    // Net Volume Chart
-    netVolumeChart.data.labels = sorted.map(d => new Date(d.date));
-    netVolumeChart.data.datasets[0].data = sorted.map(d => d.net_volume);
-    netVolumeChart.data.datasets[0].backgroundColor = sorted.map(d =>
-        d.net_volume >= 0 ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)'
-    );
-    netVolumeChart.update('none');
-
-    // Cumulative Chart
-    if (cumulativeData.length) {
-        const sortedCum = [...cumulativeData].sort((a, b) => new Date(a.date) - new Date(b.date));
-        cumulativeChart.data.labels = sortedCum.map(d => new Date(d.date));
-        cumulativeChart.data.datasets[0].data = sortedCum.map(d => d.cumulative_volume);
-        const last = sortedCum[sortedCum.length - 1]?.cumulative_volume || 0;
-        cumulativeChart.data.datasets[0].borderColor = last >= 0 ? '#3fb950' : '#f85149';
-        cumulativeChart.data.datasets[0].backgroundColor = last >= 0
-            ? 'rgba(63, 185, 80, 0.1)' : 'rgba(248, 81, 73, 0.1)';
-        cumulativeChart.update('none');
+    priceZoneChart.data.datasets[3].data = whaleMarkerData; // Add whale markers
+    
+    // Add support/resistance lines if available
+    if (priceZoneChart.options.plugins.annotation) {
+        priceZoneChart.options.plugins.annotation.annotations = createSupportResistanceAnnotations(supportResistance);
     }
+    
+    priceZoneChart.update('none');
+}
+
+// Calculate Support and Resistance levels based on volume clusters
+function calculateSupportResistance(data) {
+    if (data.length < 10) return { support: [], resistance: [] };
+    
+    // Group prices into buckets and find volume clusters
+    const priceBuckets = {};
+    const bucketSize = Math.max(1, Math.floor((Math.max(...data.map(d => d.close_price)) - Math.min(...data.map(d => d.close_price))) / 20));
+    
+    data.forEach(d => {
+        const bucket = Math.floor(d.close_price / bucketSize) * bucketSize;
+        if (!priceBuckets[bucket]) {
+            priceBuckets[bucket] = { price: bucket, totalVolume: 0, count: 0 };
+        }
+        priceBuckets[bucket].totalVolume += Math.abs(d.total_volume || 0);
+        priceBuckets[bucket].count++;
+    });
+    
+    // Find top volume clusters
+    const clusters = Object.values(priceBuckets)
+        .sort((a, b) => b.totalVolume - a.totalVolume)
+        .slice(0, 5);
+    
+    const currentPrice = data[data.length - 1].close_price;
+    
+    return {
+        support: clusters.filter(c => c.price < currentPrice).map(c => c.price),
+        resistance: clusters.filter(c => c.price > currentPrice).map(c => c.price)
+    };
+}
+
+// Calculate Whale Zones (significant volume spikes)
+function calculateWhaleZones(data) {
+    if (data.length < 30) return [];
+    
+    // Calculate average and standard deviation
+    const volumes = data.map(d => Math.abs(d.net_volume || 0));
+    const avg = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+    const variance = volumes.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / volumes.length;
+    const stdDev = Math.sqrt(variance);
+    
+    // Identify spikes (2+ standard deviations above mean)
+    const threshold = avg + (2 * stdDev);
+    
+    return data
+        .filter(d => Math.abs(d.net_volume || 0) > threshold)
+        .map(d => ({ date: d.date, volume: d.net_volume, price: d.close_price }));
+}
+
+// Create support/resistance line annotations (if Chart.js annotation plugin is available)
+function createSupportResistanceAnnotations(sr) {
+    const annotations = {};
+    
+    sr.support.forEach((price, i) => {
+        annotations[`support_${i}`] = {
+            type: 'line',
+            yMin: price,
+            yMax: price,
+            borderColor: 'rgba(63, 185, 80, 0.5)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            label: {
+                content: `Support: $${price.toFixed(0)}`,
+                enabled: true,
+                position: 'start'
+            }
+        };
+    });
+    
+    sr.resistance.forEach((price, i) => {
+        annotations[`resistance_${i}`] = {
+            type: 'line',
+            yMin: price,
+            yMax: price,
+            borderColor: 'rgba(248, 81, 73, 0.5)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            label: {
+                content: `Resistance: $${price.toFixed(0)}`,
+                enabled: true,
+                position: 'start'
+            }
+        };
+    });
+    
+    return annotations;
 }
 
 function updateEtfChart() {
@@ -590,7 +718,101 @@ function renderTable() {
 function setupEvents() {
     document.getElementById('coinSelect').addEventListener('change', e => {
         currentCoin = e.target.value;
+        updateRemoveButtonVisibility();
         loadData();
+        loadAlerts();
+    });
+    
+    // Custom coin input
+    document.getElementById('addCoinBtn').addEventListener('click', async () => {
+        const input = document.getElementById('customCoinInput');
+        const coin = input.value.trim().toUpperCase();
+        
+        if (!coin) {
+            showToast('Please enter a coin symbol', 'error');
+            return;
+        }
+        
+        if (coin.length > 10) {
+            showToast('Coin symbol too long', 'error');
+            return;
+        }
+        
+        showLoading('Validating coin on Binance...');
+        const isValid = await validateCoinOnBinance(coin);
+        
+        if (!isValid) {
+            hideLoading();
+            showToast(`${coin} not found on Binance or invalid`, 'error');
+            return;
+        }
+        
+        const added = addCustomCoin(coin);
+        
+        if (added) {
+            showToast(`${coin} added successfully!`, 'success');
+            input.value = '';
+            currentCoin = coin;
+            document.getElementById('coinSelect').value = coin;
+            updateRemoveButtonVisibility();
+            
+            // Auto-sync the new coin
+            try {
+                const res = await triggerSync(coin, true);
+                if (res.success) {
+                    await loadData();
+                    showToast(`${coin} data synced!`, 'success');
+                }
+            } catch (e) {
+                showToast('Added but sync failed: ' + e.message, 'error');
+            }
+        } else {
+            showToast(`${coin} already exists`, 'error');
+        }
+        
+        hideLoading();
+    });
+    
+    // Remove custom coin button
+    const removeCoinBtn = document.getElementById('removeCoinBtn');
+    if (removeCoinBtn) {
+        removeCoinBtn.addEventListener('click', async () => {
+            const coin = currentCoin;
+            
+            if (!customCoins.includes(coin)) {
+                showToast('Can only remove custom coins', 'error');
+                return;
+            }
+            
+            if (!confirm(`Remove ${coin} from your custom coins?\n\nNote: This will not delete the synced data.`)) {
+                return;
+            }
+            
+            const removed = removeCustomCoin(coin);
+            
+            if (removed) {
+                showToast(`${coin} removed from custom coins`, 'success');
+                
+                // Switch to first available coin
+                const allCoins = getAllCoins();
+                if (allCoins.length > 0) {
+                    currentCoin = allCoins[0];
+                    document.getElementById('coinSelect').value = currentCoin;
+                    updateRemoveButtonVisibility();
+                    await loadData();
+                    await loadAlerts();
+                }
+            } else {
+                showToast('Failed to remove coin', 'error');
+            }
+        });
+    }
+    
+    // Enter key support for custom coin input
+    document.getElementById('customCoinInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('addCoinBtn').click();
+        }
     });
 
     document.getElementById('syncBtn').addEventListener('click', async () => {
@@ -675,14 +897,12 @@ async function loadData() {
         const s = document.getElementById('startDate').value || null;
         const e = document.getElementById('endDate').value || null;
 
-        const [volumes, cumulative, summaryData] = await Promise.all([
+        const [volumes, summaryData] = await Promise.all([
             fetchVolumes(currentCoin, s, e),
-            fetchCumulative(currentCoin, s),
             fetchSummary(currentCoin)
         ]);
 
         volumeData = volumes;
-        cumulativeData = cumulative;
 
         updateStats(summaryData.summary, summaryData.dateRange);
         updateCharts();
@@ -721,12 +941,15 @@ async function loadData() {
 
 async function init() {
     await fetchConfig();
-    const select = document.getElementById('coinSelect');
-    select.innerHTML = configuredCoins.map(c => `<option value="${c}">${c}</option>`).join('');
-    currentCoin = configuredCoins[0] || 'BTC';
+    updateCoinSelect(); // Use the new function that includes custom coins
+    const allCoins = getAllCoins();
+    currentCoin = allCoins[0] || 'BTC';
+    document.getElementById('coinSelect').value = currentCoin;
     initCharts();
     setupEvents();
+    setupAlertsEvents(); // Setup alert event listeners
     loadData();
+    loadAlerts(); // Load alerts on startup
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -803,8 +1026,8 @@ function renderAlertsFeed() {
     feed.innerHTML = currentAlerts.map(alert => {
         const icon = getAlertIcon(alert.alert_type);
         const severity = alert.severity || 'low';
-        const date = new Date(alert.timestamp || alert.date);
-        const timeAgo = formatTimeAgo(date);
+        // Use the event date (when the alert actually happened), not the scan timestamp
+        const eventDate = formatEventDate(alert.date);
         
         // Build metadata items
         const metaItems = [];
@@ -863,7 +1086,7 @@ function renderAlertsFeed() {
                             <span class="alert-type-badge">${alert.coin}</span>
                             <span class="alert-severity-badge ${severity}">${severity.toUpperCase()}</span>
                         </div>
-                        <span class="alert-timestamp">${timeAgo}</span>
+                        <span class="alert-timestamp">${eventDate}</span>
                     </div>
                     <h4 class="alert-title">${formatAlertType(alert.alert_type)}</h4>
                     <p class="alert-description">${alert.description || 'No description'}</p>
@@ -886,15 +1109,29 @@ function formatAlertType(type) {
         .join(' ');
 }
 
-function formatTimeAgo(date) {
-    const seconds = Math.floor((new Date() - date) / 1000);
+function formatEventDate(dateStr) {
+    // Show the actual event date instead of "time ago"
+    const date = new Date(dateStr);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
     
-    if (seconds < 60) return 'Just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+    const dateOnly = date.toLocaleDateString();
+    const todayOnly = today.toLocaleDateString();
+    const yesterdayOnly = yesterday.toLocaleDateString();
     
-    return date.toLocaleDateString();
+    if (dateOnly === todayOnly) {
+        return 'Today';
+    } else if (dateOnly === yesterdayOnly) {
+        return 'Yesterday';
+    } else {
+        // Show formatted date
+        return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined 
+        });
+    }
 }
 
 function updateAlertSummary(summary) {
@@ -913,18 +1150,32 @@ function updateAlertSummary(summary) {
 }
 
 async function loadAlerts() {
+    const feed = document.getElementById('alertsFeed');
+    
+    // Show loading state
+    feed.innerHTML = `
+        <div class="alerts-loading">
+            <div class="spinner"></div>
+            <p>Loading alerts...</p>
+        </div>
+    `;
+    
+    console.log('Loading alerts for:', currentCoin);
+    
     try {
         const [alerts, summary] = await Promise.all([
             fetchAlerts(currentCoin, currentSeverityFilter),
             fetchAlertsSummary(currentCoin)
         ]);
         
+        console.log('Loaded alerts:', alerts.length, 'Summary:', summary);
+        
         currentAlerts = alerts;
         renderAlertsFeed();
         updateAlertSummary(summary);
     } catch (e) {
         console.error('Error loading alerts:', e);
-        document.getElementById('alertsFeed').innerHTML = `
+        feed.innerHTML = `
             <div class="alerts-empty">
                 <div class="alerts-empty-icon">⚠️</div>
                 <h3>Error loading alerts</h3>
@@ -937,12 +1188,15 @@ async function loadAlerts() {
 function setupAlertsEvents() {
     // Scan alerts button
     document.getElementById('scanAlertsBtn').addEventListener('click', async () => {
+        console.log('Scan Now button clicked');
         showLoading('Scanning for smart actions...');
         try {
             const res = await scanForAlerts();
+            console.log('Scan result:', res);
             showToast(res.message || 'Scan complete!', res.success ? 'success' : 'error');
             if (res.success) await loadAlerts();
         } catch (e) {
+            console.error('Scan error:', e);
             showToast('Error: ' + e.message, 'error');
         }
         hideLoading();
@@ -951,15 +1205,8 @@ function setupAlertsEvents() {
     // Severity filter
     document.getElementById('alertSeverityFilter').addEventListener('change', (e) => {
         currentSeverityFilter = e.target.value;
+        console.log('Severity filter changed to:', currentSeverityFilter);
         loadAlerts();
     });
 }
-
-// Modify the init function to include alerts
-const originalInit = init;
-init = async function() {
-    await originalInit();
-    setupAlertsEvents();
-    loadAlerts();
-};
 

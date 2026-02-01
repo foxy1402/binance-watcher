@@ -202,6 +202,18 @@ body::before {
     border-color: var(--text-secondary);
 }
 
+.btn-danger {
+    background: var(--bg-tertiary);
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+.btn-danger:hover {
+    background: var(--red);
+    color: var(--text-primary);
+    box-shadow: 0 0 15px var(--red-glow);
+}
+
 .btn-sm {
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.8rem;
@@ -213,7 +225,8 @@ body::before {
 
 .select-input,
 .date-input,
-.search-input {
+.search-input,
+.custom-coin-input {
     padding: var(--space-sm) var(--space-md);
     font-size: 0.875rem;
     background: var(--bg-tertiary);
@@ -225,10 +238,28 @@ body::before {
 
 .select-input:focus,
 .date-input:focus,
-.search-input:focus {
+.search-input:focus,
+.custom-coin-input:focus {
     outline: none;
     border-color: var(--blue);
     box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
+}
+
+/* Custom Coin Input Styling */
+.coin-selector-group {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+}
+
+.custom-coin-input {
+    width: 120px;
+    text-transform: uppercase;
+}
+
+.custom-coin-input::placeholder {
+    color: var(--text-muted);
+    text-transform: none;
 }
 
 /* =============================================================================

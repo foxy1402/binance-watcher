@@ -31,9 +31,18 @@
                 <h1>Crypto Volume Tracker</h1>
             </div>
             <div class="header-actions">
-                <select id="coinSelect" class="select-input">
-                    <!-- Populated from config -->
-                </select>
+                <div class="coin-selector-group">
+                    <select id="coinSelect" class="select-input">
+                        <!-- Populated from config -->
+                    </select>
+                    <button id="removeCoinBtn" class="btn btn-danger" title="Remove selected custom coin" style="display: none;">
+                        <span class="btn-icon">🗑️</span>
+                    </button>
+                    <input type="text" id="customCoinInput" class="custom-coin-input" placeholder="Add coin (e.g., ETH)" maxlength="10">
+                    <button id="addCoinBtn" class="btn btn-secondary" title="Add custom coin from Binance">
+                        <span class="btn-icon">➕</span>
+                    </button>
+                </div>
                 <button id="syncBtn" class="btn btn-primary">
                     <span class="btn-icon">🔄</span>
                     Sync
@@ -186,18 +195,21 @@
         <section class="charts-section charts-section-full">
             <div class="chart-card chart-card-large">
                 <div class="chart-header">
-                    <h2>🎯 Price with Accumulation / Distribution Zones</h2>
-                    <p>See which price levels had buying pressure (green background) vs selling pressure (red
-                        background)</p>
+                    <h2>🎯 Advanced Price Analysis with Smart Money Zones</h2>
+                    <p>Green zones = Accumulation (Buying Pressure) | Red zones = Distribution (Selling Pressure) | Enhanced with whale activity detection</p>
                 </div>
                 <div class="chart-legend">
                     <div class="legend-item legend-accumulation">
                         <span class="legend-color"></span>
-                        <span>Accumulation Zone (More Buying at this Price)</span>
+                        <span>🟢 Accumulation Zone (More Buying at this Price)</span>
                     </div>
                     <div class="legend-item legend-distribution">
                         <span class="legend-color"></span>
-                        <span>Distribution Zone (More Selling at this Price)</span>
+                        <span>🔴 Distribution Zone (More Selling at this Price)</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FFD700; border-radius: 50%; width: 12px; height: 12px;"></span>
+                        <span>⭐ Whale Activity (Significant Volume Spikes - 2+ Standard Deviations)</span>
                     </div>
                 </div>
                 <div class="chart-container chart-container-xl">
@@ -225,31 +237,6 @@
                 </div>
                 <div class="chart-container chart-container-xl">
                     <canvas id="etfZoneChart"></canvas>
-                </div>
-            </div>
-        </section>
-
-        <!-- Secondary Charts -->
-        <section class="charts-section">
-            <!-- Cumulative Volume Chart -->
-            <div class="chart-card">
-                <div class="chart-header">
-                    <h2>Cumulative Net Position</h2>
-                    <p>Running total of net volume</p>
-                </div>
-                <div class="chart-container">
-                    <canvas id="cumulativeChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Daily Net Volume Chart -->
-            <div class="chart-card">
-                <div class="chart-header">
-                    <h2>Daily Net Volume</h2>
-                    <p>Daily buying vs selling</p>
-                </div>
-                <div class="chart-container">
-                    <canvas id="netVolumeChart"></canvas>
                 </div>
             </div>
         </section>

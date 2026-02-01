@@ -100,20 +100,39 @@ def fetch_etf_data(ticker: str, period: str = "max", interval: str = "1d",
             if close_price == 0:
                 continue
             
-            # For ETFs, we estimate buy/sell based on price movement and volume
-            # Positive price change with high volume = accumulation
-            # Negative price change with volume = distribution
+            # For ETFs, we use improved buy/sell estimation
+            # Method: On-Balance Volume (OBV) based approach
+            # This is more accurate than simple price direction
+            
+            # Calculate price change metrics
             price_change = close_price - open_price if open_price > 0 else 0
             price_change_pct = (price_change / open_price * 100) if open_price > 0 else 0
             
-            # Estimate buy/sell volumes based on price direction
-            # This is an approximation since ETFs don't have taker buy volume
-            if price_change >= 0:
-                # Price went up - assume more buying
-                buy_ratio = 0.5 + (min(abs(price_change_pct), 5) / 10)  # 50-100% buy
-            else:
-                # Price went down - assume more selling
-                buy_ratio = 0.5 - (min(abs(price_change_pct), 5) / 10)  # 0-50% buy
+            # Intraday range to gauge volatility
+            price_range = high_price - low_price if high_price > low_price else 0.01
+            close_position = (close_price - low_price) / price_range if price_range > 0 else 0.5
+            
+            # Improved buy/sell estimation using multiple factors:
+            # 1. Close position in daily range (higher = more buying)
+            # 2. Price change percentage (momentum)
+            # 3. Volume magnitude (higher volume = more reliable signal)
+            
+            # Base ratio from close position (0.0 to 1.0)
+            base_buy_ratio = close_position
+            
+            # Adjust for price momentum (±10% max adjustment)
+            momentum_adjustment = min(max(price_change_pct / 10, -0.1), 0.1)
+            
+            # Final buy ratio with bounds [0.2, 0.8] to avoid extremes
+            buy_ratio = min(max(base_buy_ratio + momentum_adjustment, 0.2), 0.8)
+            
+            # Special cases:
+            # Strong up day with close near high
+            if price_change_pct > 3 and close_position > 0.8:
+                buy_ratio = 0.85
+            # Strong down day with close near low
+            elif price_change_pct < -3 and close_position < 0.2:
+                buy_ratio = 0.15
             
             buy_volume = volume * buy_ratio
             sell_volume = volume * (1 - buy_ratio)

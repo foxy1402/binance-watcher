@@ -112,6 +112,67 @@ def init_database():
             ON etf_data(ticker, date DESC)
         ''')
         
+        # Smart alerts table for whale detection and unusual activity
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS smart_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                coin TEXT NOT NULL,
+                date DATE NOT NULL,
+                alert_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT,
+                value_usd REAL,
+                volume REAL,
+                price REAL,
+                zscore REAL,
+                size_class TEXT,
+                rsi REAL,
+                metadata TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                acknowledged INTEGER DEFAULT 0,
+                UNIQUE(coin, date, alert_type)
+            )
+        ''')
+        
+        # Index for alert queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alerts_coin_date 
+            ON smart_alerts(coin, date DESC)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alerts_severity 
+            ON smart_alerts(severity, timestamp DESC)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alerts_type 
+            ON smart_alerts(alert_type, timestamp DESC)
+        ''')
+        
+        # Futures metrics table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS futures_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                coin TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                date DATE NOT NULL,
+                spot_price REAL,
+                futures_price REAL,
+                premium_pct REAL,
+                funding_rate REAL,
+                funding_rate_annualized REAL,
+                open_interest REAL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, date)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_futures_coin_date 
+            ON futures_metrics(coin, date DESC)
+        ''')
+        
         conn.commit()
 
 
@@ -541,6 +602,276 @@ def get_etf_latest_date(coin='BTC') -> str:
         ''', (coin,))
         row = cursor.fetchone()
         return row['latest'] if row and row['latest'] else None
+
+
+def upsert_smart_alert(alert: dict):
+    """
+    Insert or update a smart alert
+    
+    Args:
+        alert: Alert dictionary
+    
+    Returns:
+        Alert ID
+    """
+    import json
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Prepare metadata JSON
+        metadata = {
+            k: v for k, v in alert.items()
+            if k not in ['coin', 'date', 'type', 'severity', 'description', 
+                        'value_usd', 'volume', 'price', 'zscore', 'size_class', 'rsi']
+        }
+        
+        cursor.execute('''
+            INSERT INTO smart_alerts (
+                coin, date, alert_type, severity, description,
+                value_usd, volume, price, zscore, size_class, rsi, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(coin, date, alert_type) DO UPDATE SET
+                severity = excluded.severity,
+                description = excluded.description,
+                value_usd = excluded.value_usd,
+                volume = excluded.volume,
+                price = excluded.price,
+                zscore = excluded.zscore,
+                size_class = excluded.size_class,
+                rsi = excluded.rsi,
+                metadata = excluded.metadata,
+                timestamp = CURRENT_TIMESTAMP
+        ''', (
+            alert.get('coin'),
+            alert.get('date'),
+            alert.get('type'),
+            alert.get('severity', 'low'),
+            alert.get('description'),
+            alert.get('value_usd'),
+            alert.get('volume'),
+            alert.get('price'),
+            alert.get('zscore'),
+            alert.get('size_class'),
+            alert.get('rsi'),
+            json.dumps(metadata)
+        ))
+        
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_smart_alerts(coin=None, start_date=None, end_date=None, 
+                     severity=None, alert_type=None, limit=100):
+    """
+    Retrieve smart alerts with filters
+    
+    Args:
+        coin: Filter by coin
+        start_date: Start date filter
+        end_date: End date filter
+        severity: Filter by severity (critical, high, medium, low)
+        alert_type: Filter by alert type
+        limit: Maximum records
+    
+    Returns:
+        List of alert dictionaries
+    """
+    import json
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        query = 'SELECT * FROM smart_alerts WHERE 1=1'
+        params = []
+        
+        if coin:
+            query += ' AND coin = ?'
+            params.append(coin)
+        
+        if start_date:
+            query += ' AND date >= ?'
+            params.append(start_date)
+        
+        if end_date:
+            query += ' AND date <= ?'
+            params.append(end_date)
+        
+        if severity:
+            query += ' AND severity = ?'
+            params.append(severity)
+        
+        if alert_type:
+            query += ' AND alert_type = ?'
+            params.append(alert_type)
+        
+        query += ' ORDER BY timestamp DESC LIMIT ?'
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        alerts = []
+        for row in rows:
+            alert = dict(row)
+            # Parse metadata JSON
+            if alert.get('metadata'):
+                try:
+                    metadata = json.loads(alert['metadata'])
+                    alert.update(metadata)
+                except:
+                    pass
+            alerts.append(alert)
+        
+        return alerts
+
+
+def get_alert_summary(coin=None, days=7):
+    """
+    Get summary of recent alerts
+    
+    Args:
+        coin: Filter by coin
+        days: Number of days to look back
+    
+    Returns:
+        Summary dictionary
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        query = '''
+            SELECT 
+                COUNT(*) as total_alerts,
+                SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+                SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) as high,
+                SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) as medium,
+                SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) as low,
+                COUNT(DISTINCT alert_type) as unique_types,
+                COUNT(DISTINCT coin) as coins_affected
+            FROM smart_alerts
+            WHERE date >= date('now', '-' || ? || ' days')
+        '''
+        params = [days]
+        
+        if coin:
+            query += ' AND coin = ?'
+            params.append(coin)
+        
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        
+        return dict(row) if row else None
+
+
+def acknowledge_alert(alert_id: int):
+    """Mark an alert as acknowledged"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE smart_alerts SET acknowledged = 1 WHERE id = ?',
+            (alert_id,)
+        )
+        conn.commit()
+
+
+def delete_old_alerts(days=90):
+    """Delete alerts older than specified days"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM smart_alerts WHERE date < date('now', '-' || ? || ' days')",
+            (days,)
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
+def upsert_futures_metrics(metrics: dict):
+    """
+    Insert or update futures metrics
+    
+    Args:
+        metrics: Futures metrics dictionary
+    
+    Returns:
+        Record ID
+    """
+    from datetime import datetime
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Use current date
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        
+        cursor.execute('''
+            INSERT INTO futures_metrics (
+                coin, symbol, date, spot_price, futures_price,
+                premium_pct, funding_rate, funding_rate_annualized, open_interest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, date) DO UPDATE SET
+                spot_price = excluded.spot_price,
+                futures_price = excluded.futures_price,
+                premium_pct = excluded.premium_pct,
+                funding_rate = excluded.funding_rate,
+                funding_rate_annualized = excluded.funding_rate_annualized,
+                open_interest = excluded.open_interest,
+                timestamp = CURRENT_TIMESTAMP
+        ''', (
+            metrics.get('coin'),
+            metrics.get('symbol'),
+            date_str,
+            metrics.get('spot_price'),
+            metrics.get('futures_price'),
+            metrics.get('premium_pct'),
+            metrics.get('funding_rate'),
+            metrics.get('funding_rate_annualized'),
+            metrics.get('open_interest')
+        ))
+        
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_futures_metrics(coin=None, start_date=None, end_date=None, limit=30):
+    """
+    Retrieve futures metrics
+    
+    Args:
+        coin: Filter by coin
+        start_date: Start date filter
+        end_date: End date filter
+        limit: Maximum records
+    
+    Returns:
+        List of futures metrics
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        query = 'SELECT * FROM futures_metrics WHERE 1=1'
+        params = []
+        
+        if coin:
+            query += ' AND coin = ?'
+            params.append(coin)
+        
+        if start_date:
+            query += ' AND date >= ?'
+            params.append(start_date)
+        
+        if end_date:
+            query += ' AND date <= ?'
+            params.append(end_date)
+        
+        query += ' ORDER BY date DESC LIMIT ?'
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        return [dict(row) for row in rows]
 
 
 # Initialize database on module import

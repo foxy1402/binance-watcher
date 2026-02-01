@@ -731,3 +731,235 @@ async function init() {
 
 document.addEventListener('DOMContentLoaded', init);
 
+// =============================================================================
+// Smart Alerts
+// =============================================================================
+
+let currentAlerts = [];
+let currentSeverityFilter = '';
+
+async function fetchAlerts(coin, severity = null) {
+    let url = `${API_BASE}/api/alerts?coin=${coin}&limit=50`;
+    if (severity) url += `&severity=${severity}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.success) return data.alerts;
+    return [];
+}
+
+async function fetchAlertsSummary(coin) {
+    const res = await fetch(`${API_BASE}/api/alerts/summary?coin=${coin}&days=7`);
+    const data = await res.json();
+    if (data.success) return data.summary;
+    return null;
+}
+
+async function scanForAlerts(coin = null) {
+    const res = await fetch(`${API_BASE}/api/alerts/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ coin: coin || currentCoin, days: 7 })
+    });
+    return await res.json();
+}
+
+function getAlertIcon(alertType) {
+    const icons = {
+        'whale_buy': '🐋',
+        'whale_sell': '🐋',
+        'whale_accumulation': '💰',
+        'whale_distribution': '📤',
+        'volume_spike': '📊',
+        'buy_volume_spike': '📈',
+        'sell_volume_spike': '📉',
+        'bullish_divergence': '⬆️',
+        'bearish_divergence': '⬇️',
+        'rsi_oversold': '🔵',
+        'rsi_overbought': '🔴',
+        'high_futures_premium': '⚡',
+        'futures_discount': '⚡',
+        'extreme_funding_rate': '💸',
+        'extreme_negative_funding': '💸',
+        'backwardation_signal': '🎯',
+        'contango_warning': '⚠️'
+    };
+    return icons[alertType] || '🚨';
+}
+
+function renderAlertsFeed() {
+    const feed = document.getElementById('alertsFeed');
+    
+    if (!currentAlerts || currentAlerts.length === 0) {
+        feed.innerHTML = `
+            <div class="alerts-empty">
+                <div class="alerts-empty-icon">🔍</div>
+                <h3>No alerts found</h3>
+                <p>Click "Scan Now" to detect whale trades and unusual activity</p>
+            </div>
+        `;
+        return;
+    }
+    
+    feed.innerHTML = currentAlerts.map(alert => {
+        const icon = getAlertIcon(alert.alert_type);
+        const severity = alert.severity || 'low';
+        const date = new Date(alert.timestamp || alert.date);
+        const timeAgo = formatTimeAgo(date);
+        
+        // Build metadata items
+        const metaItems = [];
+        
+        if (alert.value_usd) {
+            metaItems.push(`
+                <div class="alert-meta-item">
+                    <span class="alert-meta-label">Value</span>
+                    <span class="alert-meta-value">${formatCurrency(alert.value_usd, true)}</span>
+                </div>
+            `);
+        }
+        
+        if (alert.volume) {
+            metaItems.push(`
+                <div class="alert-meta-item">
+                    <span class="alert-meta-label">Volume</span>
+                    <span class="alert-meta-value">${formatNumber(alert.volume, 0)} ${alert.coin}</span>
+                </div>
+            `);
+        }
+        
+        if (alert.zscore) {
+            metaItems.push(`
+                <div class="alert-meta-item">
+                    <span class="alert-meta-label">Z-Score</span>
+                    <span class="alert-meta-value ${alert.zscore > 0 ? 'positive' : 'negative'}">${alert.zscore.toFixed(2)}σ</span>
+                </div>
+            `);
+        }
+        
+        if (alert.rsi) {
+            metaItems.push(`
+                <div class="alert-meta-item">
+                    <span class="alert-meta-label">RSI</span>
+                    <span class="alert-meta-value">${alert.rsi.toFixed(1)}</span>
+                </div>
+            `);
+        }
+        
+        if (alert.price) {
+            metaItems.push(`
+                <div class="alert-meta-item">
+                    <span class="alert-meta-label">Price</span>
+                    <span class="alert-meta-value">$${formatNumber(alert.price, 2)}</span>
+                </div>
+            `);
+        }
+        
+        return `
+            <div class="alert-item ${severity}">
+                <div class="alert-icon">${icon}</div>
+                <div class="alert-content">
+                    <div class="alert-header">
+                        <div>
+                            <span class="alert-type-badge">${alert.coin}</span>
+                            <span class="alert-severity-badge ${severity}">${severity.toUpperCase()}</span>
+                        </div>
+                        <span class="alert-timestamp">${timeAgo}</span>
+                    </div>
+                    <h4 class="alert-title">${formatAlertType(alert.alert_type)}</h4>
+                    <p class="alert-description">${alert.description || 'No description'}</p>
+                    ${metaItems.length > 0 ? `
+                        <div class="alert-meta">
+                            ${metaItems.join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function formatAlertType(type) {
+    return type
+        .replace(/_/g, ' ')
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+}
+
+function formatTimeAgo(date) {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    
+    if (seconds < 60) return 'Just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+    
+    return date.toLocaleDateString();
+}
+
+function updateAlertSummary(summary) {
+    if (!summary) {
+        document.getElementById('criticalCount').textContent = '0';
+        document.getElementById('highCount').textContent = '0';
+        document.getElementById('mediumCount').textContent = '0';
+        document.getElementById('lowCount').textContent = '0';
+        return;
+    }
+    
+    document.getElementById('criticalCount').textContent = summary.critical || '0';
+    document.getElementById('highCount').textContent = summary.high || '0';
+    document.getElementById('mediumCount').textContent = summary.medium || '0';
+    document.getElementById('lowCount').textContent = summary.low || '0';
+}
+
+async function loadAlerts() {
+    try {
+        const [alerts, summary] = await Promise.all([
+            fetchAlerts(currentCoin, currentSeverityFilter),
+            fetchAlertsSummary(currentCoin)
+        ]);
+        
+        currentAlerts = alerts;
+        renderAlertsFeed();
+        updateAlertSummary(summary);
+    } catch (e) {
+        console.error('Error loading alerts:', e);
+        document.getElementById('alertsFeed').innerHTML = `
+            <div class="alerts-empty">
+                <div class="alerts-empty-icon">⚠️</div>
+                <h3>Error loading alerts</h3>
+                <p>${e.message}</p>
+            </div>
+        `;
+    }
+}
+
+function setupAlertsEvents() {
+    // Scan alerts button
+    document.getElementById('scanAlertsBtn').addEventListener('click', async () => {
+        showLoading('Scanning for smart actions...');
+        try {
+            const res = await scanForAlerts();
+            showToast(res.message || 'Scan complete!', res.success ? 'success' : 'error');
+            if (res.success) await loadAlerts();
+        } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+        }
+        hideLoading();
+    });
+    
+    // Severity filter
+    document.getElementById('alertSeverityFilter').addEventListener('change', (e) => {
+        currentSeverityFilter = e.target.value;
+        loadAlerts();
+    });
+}
+
+// Modify the init function to include alerts
+const originalInit = init;
+init = async function() {
+    await originalInit();
+    setupAlertsEvents();
+    loadAlerts();
+};
+

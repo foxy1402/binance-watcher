@@ -90,6 +90,69 @@
             </div>
         </section>
 
+        <!-- Smart Alerts Section -->
+        <section class="alerts-section">
+            <div class="alerts-header">
+                <div class="alerts-title">
+                    <h2>🚨 Smart Money Alerts</h2>
+                    <p>Real-time detection of whale trades, volume spikes, and unusual market activity</p>
+                </div>
+                <div class="alerts-actions">
+                    <button id="scanAlertsBtn" class="btn btn-primary">
+                        <span class="btn-icon">🔍</span>
+                        Scan Now
+                    </button>
+                    <select id="alertSeverityFilter" class="select-input">
+                        <option value="">All Severities</option>
+                        <option value="critical">🔴 Critical</option>
+                        <option value="high">🟠 High</option>
+                        <option value="medium">🟡 Medium</option>
+                        <option value="low">🟢 Low</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- Alert Summary Cards -->
+            <div class="alert-summary-grid">
+                <div class="alert-summary-card critical">
+                    <div class="alert-summary-icon">🔴</div>
+                    <div class="alert-summary-content">
+                        <div class="alert-summary-count" id="criticalCount">0</div>
+                        <div class="alert-summary-label">Critical</div>
+                    </div>
+                </div>
+                <div class="alert-summary-card high">
+                    <div class="alert-summary-icon">🟠</div>
+                    <div class="alert-summary-content">
+                        <div class="alert-summary-count" id="highCount">0</div>
+                        <div class="alert-summary-label">High</div>
+                    </div>
+                </div>
+                <div class="alert-summary-card medium">
+                    <div class="alert-summary-icon">🟡</div>
+                    <div class="alert-summary-content">
+                        <div class="alert-summary-count" id="mediumCount">0</div>
+                        <div class="alert-summary-label">Medium</div>
+                    </div>
+                </div>
+                <div class="alert-summary-card low">
+                    <div class="alert-summary-icon">🟢</div>
+                    <div class="alert-summary-content">
+                        <div class="alert-summary-count" id="lowCount">0</div>
+                        <div class="alert-summary-label">Low</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alert Feed -->
+            <div class="alerts-feed" id="alertsFeed">
+                <div class="alerts-loading">
+                    <div class="spinner"></div>
+                    <p>Loading alerts...</p>
+                </div>
+            </div>
+        </section>
+
         <!-- Date Filter -->
         <section class="filter-section">
             <div class="filter-card">

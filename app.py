@@ -11,6 +11,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import database as db
 import binance_fetcher as bf
 import etf_fetcher as ef
+import indicators as ind
+import whale_detector as wd
+import futures_tracker as ft
 import config
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -44,18 +47,20 @@ def get_config():
 @app.route('/api/volumes', methods=['GET'])
 def get_volumes():
     """
-    Get volume data with optional filters
+    Get volume data with optional filters and technical indicators
     
     Query params:
         coin: Base coin (default: BTC) - NOT the trading pair!
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
         limit: Max records to return
+        include_indicators: Include technical indicators (default: false)
     """
     coin = request.args.get('coin', 'BTC').upper()
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
     limit = request.args.get('limit', type=int)
+    include_indicators = request.args.get('include_indicators', 'false').lower() == 'true'
     
     data = db.get_volume_data(
         coin=coin,
@@ -63,6 +68,14 @@ def get_volumes():
         end_date=end_date,
         limit=limit
     )
+    
+    # Add technical indicators if requested
+    if include_indicators and data:
+        # Sort by date ascending for indicator calculation
+        data_asc = sorted(data, key=lambda x: x['date'])
+        data_asc = ind.enhance_volume_data_with_indicators(data_asc)
+        # Sort back to descending
+        data = sorted(data_asc, key=lambda x: x['date'], reverse=True)
     
     return jsonify({
         'success': True,
@@ -339,6 +352,258 @@ def export_data():
 
 
 # =============================================================================
+# SMART ALERTS API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/alerts', methods=['GET'])
+def get_alerts():
+    """
+    Get smart alerts with optional filters
+    
+    Query params:
+        coin: Filter by coin
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        severity: Filter by severity (critical, high, medium, low)
+        alert_type: Filter by alert type
+        limit: Max records (default: 100)
+    """
+    coin = request.args.get('coin')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    severity = request.args.get('severity')
+    alert_type = request.args.get('alert_type')
+    limit = request.args.get('limit', 100, type=int)
+    
+    alerts = db.get_smart_alerts(
+        coin=coin,
+        start_date=start_date,
+        end_date=end_date,
+        severity=severity,
+        alert_type=alert_type,
+        limit=limit
+    )
+    
+    return jsonify({
+        'success': True,
+        'count': len(alerts),
+        'alerts': alerts
+    })
+
+
+@app.route('/api/alerts/summary', methods=['GET'])
+def get_alerts_summary():
+    """
+    Get summary of recent alerts
+    
+    Query params:
+        coin: Filter by coin (optional)
+        days: Number of days to look back (default: 7)
+    """
+    coin = request.args.get('coin')
+    days = request.args.get('days', 7, type=int)
+    
+    summary = db.get_alert_summary(coin=coin, days=days)
+    
+    return jsonify({
+        'success': True,
+        'days': days,
+        'coin': coin,
+        'summary': summary
+    })
+
+
+@app.route('/api/alerts/<int:alert_id>/acknowledge', methods=['POST'])
+def acknowledge_alert(alert_id):
+    """Acknowledge/dismiss an alert"""
+    db.acknowledge_alert(alert_id)
+    return jsonify({
+        'success': True,
+        'message': 'Alert acknowledged'
+    })
+
+
+@app.route('/api/alerts/scan', methods=['POST'])
+def scan_for_alerts():
+    """
+    Manually trigger smart alert scanning for recent data
+    
+    JSON body:
+        coin: Base coin (default: all configured coins)
+        days: Number of days to scan (default: 7)
+    """
+    data = request.get_json() or {}
+    requested_coin = data.get('coin')
+    days = data.get('days', 7)
+    
+    # Determine which coins to scan
+    if requested_coin:
+        coins_to_scan = [requested_coin.upper()]
+    else:
+        coins_to_scan = config.get_coins()
+    
+    total_alerts = 0
+    results = {}
+    
+    for coin in coins_to_scan:
+        try:
+            # Get recent data with indicators
+            volume_data = db.get_volume_data(coin=coin, limit=days + 30)
+            
+            if not volume_data or len(volume_data) < 2:
+                results[coin] = "Insufficient data"
+                continue
+            
+            # Sort ascending for calculations
+            volume_data = sorted(volume_data, key=lambda x: x['date'])
+            
+            # Add technical indicators
+            volume_data = ind.enhance_volume_data_with_indicators(volume_data)
+            
+            # Detect smart actions on recent days
+            alerts_for_coin = []
+            for i in range(max(0, len(volume_data) - days), len(volume_data)):
+                current_candle = volume_data[i]
+                historical = volume_data[max(0, i - 30):i]
+                
+                alerts = wd.detect_all_smart_actions(current_candle, historical)
+                alerts_for_coin.extend(alerts)
+            
+            # Save alerts to database
+            for alert in alerts_for_coin:
+                db.upsert_smart_alert(alert)
+            
+            results[coin] = f"{len(alerts_for_coin)} alerts"
+            total_alerts += len(alerts_for_coin)
+            
+        except Exception as e:
+            results[coin] = f"Error: {str(e)}"
+    
+    return jsonify({
+        'success': True,
+        'message': f'Scanned and found {total_alerts} alerts',
+        'results': results
+    })
+
+
+# =============================================================================
+# FUTURES MARKET API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/futures', methods=['GET'])
+def get_futures_data():
+    """
+    Get futures metrics (premium, funding rate, OI)
+    
+    Query params:
+        coin: Base coin (default: BTC)
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        limit: Max records (default: 30)
+    """
+    coin = request.args.get('coin', 'BTC').upper()
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    limit = request.args.get('limit', 30, type=int)
+    
+    metrics = db.get_futures_metrics(
+        coin=coin,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit
+    )
+    
+    return jsonify({
+        'success': True,
+        'coin': coin,
+        'count': len(metrics),
+        'data': metrics
+    })
+
+
+@app.route('/api/futures/current', methods=['GET'])
+def get_current_futures():
+    """
+    Get current real-time futures metrics
+    
+    Query params:
+        coin: Base coin (default: BTC)
+    """
+    coin = request.args.get('coin', 'BTC').upper()
+    
+    try:
+        # Get current spot price from recent data
+        recent = db.get_volume_data(coin=coin, limit=1)
+        spot_price = recent[0]['close_price'] if recent else None
+        
+        # Get futures metrics
+        metrics = ft.get_futures_metrics(coin=coin, spot_price=spot_price)
+        
+        if not metrics:
+            return jsonify({
+                'success': False,
+                'message': 'Could not fetch futures data'
+            }), 404
+        
+        # Detect anomalies
+        alerts = ft.detect_futures_anomalies(metrics)
+        
+        # Save to database
+        db.upsert_futures_metrics(metrics)
+        
+        # Save alerts
+        for alert in alerts:
+            alert['date'] = datetime.now().strftime('%Y-%m-%d')
+            db.upsert_smart_alert(alert)
+        
+        return jsonify({
+            'success': True,
+            'coin': coin,
+            'metrics': metrics,
+            'alerts': alerts
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/futures/liquidations', methods=['GET'])
+def get_liquidation_zones():
+    """
+    Get estimated liquidation zones
+    
+    Query params:
+        coin: Base coin (default: BTC)
+    """
+    coin = request.args.get('coin', 'BTC').upper()
+    symbol = f"{coin}USDT"
+    
+    try:
+        liq_data = ft.get_liquidation_estimates(symbol)
+        
+        if not liq_data:
+            return jsonify({
+                'success': False,
+                'message': 'Could not fetch liquidation data'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'coin': coin,
+            'data': liq_data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+# =============================================================================
 # BACKGROUND SCHEDULER
 # =============================================================================
 
@@ -347,6 +612,7 @@ def scheduled_sync():
     
     Attempts full sync first. If any error occurs (Binance or ETF),
     automatically falls back to incremental sync for that coin.
+    Also runs smart alert detection on new data.
     """
     print(f"[{datetime.now()}] Running scheduled FULL sync...")
     
@@ -365,6 +631,27 @@ def scheduled_sync():
                 db.update_sync_status(coin)
                 print(f"  [{coin}] Full sync complete: {len(volume_data)} records")
                 full_sync_success = True
+                
+                # Run smart alert detection on recent data
+                try:
+                    print(f"  [{coin}] Running smart alert detection...")
+                    recent_data = db.get_volume_data(coin=coin, limit=37)  # 30 for context + 7 for scanning
+                    if recent_data and len(recent_data) >= 2:
+                        recent_data = sorted(recent_data, key=lambda x: x['date'])
+                        recent_data = ind.enhance_volume_data_with_indicators(recent_data)
+                        
+                        alerts_found = 0
+                        for i in range(max(0, len(recent_data) - 7), len(recent_data)):
+                            current = recent_data[i]
+                            historical = recent_data[max(0, i - 30):i]
+                            alerts = wd.detect_all_smart_actions(current, historical)
+                            for alert in alerts:
+                                db.upsert_smart_alert(alert)
+                                alerts_found += 1
+                        
+                        print(f"  [{coin}] Smart alerts: {alerts_found} detected")
+                except Exception as alert_err:
+                    print(f"  [{coin}] Alert detection failed: {alert_err}")
             
             # Also sync ETF data if coin has ETF mapping
             etf_tickers = config.get_etfs_for_coin(coin)
